@@ -1,3 +1,1 @@
-# violentmonkey-scripts
-
 Personal collection of Violentmonkey user scripts.

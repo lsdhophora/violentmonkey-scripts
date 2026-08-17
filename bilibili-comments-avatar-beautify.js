@@ -39,7 +39,7 @@
             position: absolute !important;
             top: 0 !important;
             left: 0 !important;
-            width: 48px !important;
+            width: 50px !important;
             height: 48px !important;
             box-shadow: inset 0 0 0 2px #00a1d6 !important;
             border-radius: 50% !important;
