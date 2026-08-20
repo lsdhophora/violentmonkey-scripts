@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CPH Companion for Emacs
 // @namespace    https://github.com/lophophora
-// @version      0.1.0
+// @version      0.1.1
 // @description  Send competitive programming problems (Codeforces, AtCoder, Luogu) to the Emacs CPH server. Clone of competitive-companion.
 // @author       lophophora
 // @match        https://codeforces.com/*
@@ -13,6 +13,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        GM_notification
 // @connect      127.0.0.1
 // @connect      localhost
 // @run-at       document-idle
@@ -25,7 +26,10 @@
  *
  * It extracts problem data from the current page (same JSON schema as
  * competitive-companion), POSTs it to the Emacs CPH server
- * (default http://127.0.0.1:27121/), and shows a small status widget.
+ * (default http://127.0.0.1:27121/).
+ *
+ * No on-page UI: send the problem via the userscript menu
+ * ("Send problem to Emacs").
  *
  * The protocol is wire-compatible with the CPH companion server:
  *
@@ -42,7 +46,6 @@
   const CONFIG = {
     host: "127.0.0.1",
     port: Number(GM_getValue("cph_port", 27121)),
-    autoSend: GM_getValue("cph_autoSend", true) !== false,
   };
 
   const SITES = [
@@ -55,47 +58,6 @@
     site: null,
     sending: false,
   };
-
-  /* ---------------------------------------------------------------- widget */
-
-  function ensureWidget() {
-    if (document.getElementById("cph-emacs-widget")) return;
-    const w = document.createElement("div");
-    w.id = "cph-emacs-widget";
-    w.style.cssText =
-      "position:fixed;left:12px;bottom:12px;z-index:2147483647;" +
-      "font:13px/1.4 sans-serif;background:#f6f8fa;color:#1f2328;" +
-      "border:1px solid #d0d7de;border-radius:6px;padding:8px 10px;" +
-      "box-shadow:0 2px 8px rgba(0,0,0,.15);cursor:pointer;" +
-      "max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" +
-      "user-select:none;";
-    w.title = "Click + to send the problem to Emacs CPH";
-    w.style.display = "flex";
-    w.style.alignItems = "center";
-    w.style.gap = "7px";
-    const plus = document.createElement("span");
-    plus.id = "cph-emacs-plus";
-    plus.textContent = "+";
-    plus.style.cssText =
-      "flex:0 0 auto;width:20px;height:20px;line-height:18px;text-align:center;" +
-      "border-radius:50%;background:#1f883d;color:#fff;font-weight:700;font-size:15px;";
-    const label = document.createElement("span");
-    label.id = "cph-emacs-label";
-    label.textContent = "CPH idle";
-    w.appendChild(plus);
-    w.appendChild(label);
-    w.addEventListener("click", () => sendProblem());
-    document.body.appendChild(w);
-  }
-
-  function setStatus(kind, text) {
-    const plus = document.getElementById("cph-emacs-plus");
-    const label = document.getElementById("cph-emacs-label");
-    if (!plus || !label) return;
-    const colors = { idle: "#1f883d", sending: "#e6a23c", ok: "#1f883d", fail: "#cf222e" };
-    plus.style.background = colors[kind] || colors.idle;
-    label.textContent = text;
-  }
 
   /* -------------------------------------------------------------- helpers */
 
@@ -294,29 +256,37 @@
     return null;
   }
 
-  // Manual send only: the user clicks the + button.  No auto-send, no
-  // retries - a failed attempt just reports the status.
+  function notify(text) {
+    try {
+      GM_notification({ text, timeout: 3000 });
+    } catch (e) {
+      console.log("[cph-emacs]", text);
+    }
+  }
+
+  // Manual send only: the user picks "Send problem to Emacs" from the
+  // userscript menu.  No auto-send, no retries - a failed attempt just
+  // reports the status.
   function sendProblem() {
     const site = state.site || detectSite();
     if (!site) {
-      setStatus("fail", "Unsupported site");
+      notify("CPH: unsupported site");
       return;
     }
     let problem;
     try {
       problem = site.parse();
     } catch (err) {
-      setStatus("fail", "Parse error: " + err.message);
+      notify("CPH: parse error: " + err.message);
       return;
     }
     if (!problem || !problem.tests.length) {
-      setStatus("fail", "No sample tests found on this page");
+      notify("CPH: no sample tests found on this page");
       return;
     }
     if (state.sending) return;
     state.sending = true;
 
-    setStatus("sending", "Sending to Emacs…");
     GM_xmlhttpRequest({
       method: "POST",
       url: "http://" + CONFIG.host + ":" + CONFIG.port + "/",
@@ -329,30 +299,28 @@
           let extra = "";
           try {
             const resp = JSON.parse(r.responseText);
-            if (resp && !resp.empty) extra = " · submit state ready";
+            if (resp && !resp.empty) extra = " — submit state ready";
           } catch (e) { /* ignore */ }
-          setStatus("ok", "Sent · " + problem.tests.length + " tests" + extra);
+          notify("Sent " + problem.tests.length + " tests to Emacs" + extra);
         } else {
-          setStatus("fail", "Server error HTTP " + r.status);
+          notify("CPH: server error HTTP " + r.status);
         }
       },
       onerror: () => {
         state.sending = false;
-        setStatus("fail", "Emacs unreachable — click + to retry");
+        notify("CPH: Emacs unreachable (" + CONFIG.host + ":" + CONFIG.port + ")");
       },
       ontimeout: () => {
         state.sending = false;
-        setStatus("fail", "Timed out — click + to retry");
+        notify("CPH: timed out — is Emacs CPH running?");
       },
     });
   }
 
-  function maybeAutoSend() {
+  function maybeInit() {
     const site = detectSite();
     if (!site) return;
     state.site = site;
-    ensureWidget();
-    setStatus("idle", "CPH · click + to send");
   }
 
   /* ---------------------------------------------------------------- menus */
@@ -367,18 +335,10 @@
     }
     CONFIG.port = n;
     GM_setValue("cph_port", n);
-    setStatus("idle", "Port " + n);
-  }
-
-  function toggleAutoSend() {
-    CONFIG.autoSend = !CONFIG.autoSend;
-    GM_setValue("cph_autoSend", CONFIG.autoSend);
-    setStatus("idle", "Auto-send " + (CONFIG.autoSend ? "on" : "off"));
   }
 
   GM_registerMenuCommand("Send problem to Emacs", () => sendProblem());
   GM_registerMenuCommand("Set Emacs CPH port", setPort);
-  GM_registerMenuCommand("Toggle auto-send", toggleAutoSend);
 
   /* ---------------------------------------------------------------- debug */
 
@@ -391,15 +351,14 @@
     parseLuogu,
     buildProblem,
     sendProblem,
-    ensureWidget,
-    maybeAutoSend,
+    maybeInit,
   };
 
   /* ----------------------------------------------------------------- boot */
 
   if (document.body) {
-    maybeAutoSend();
+    maybeInit();
   } else {
-    window.addEventListener("DOMContentLoaded", maybeAutoSend);
+    window.addEventListener("DOMContentLoaded", maybeInit);
   }
 })();
